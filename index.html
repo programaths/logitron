@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Logitron</title>
+    <script src="logic.js"></script>
+    <script src="vendors/viz.js"></script>
+    <script src="vendors/full.render.js"></script>
+    <link rel="stylesheet" href="logitron.css">
+</head>
+<body>
+<div id="content">
+<h1>Logitron</h1>
+(dévelopé pour les étudiants de la HEFF...et qui en a l'usage)
+
+<div><label for="logic-expression">Écris ton expression logique et je l'analyserai: </label></div>
+<div><input id="logic-expression" type="text"><button id="analyze-button">Analyser</button></div>
+<div>Clique le symbole pour l'insérer: <span class="symbol">∧</span> <span class="symbol">∨</span> <span class="symbol">⇒</span> <span class="symbol">⇔</span> <span class="symbol">¬</span> <span class="symbol">|</span>  </div>
+<div id="error-pane" style="display: none"></div>
+    <div id="min-terms"></div>
+<div style="display: flex;gap: 2em">
+    <div>
+        <h2>Table de vérité</h2>
+        <div id="table-analysis"></div>
+    </div>
+    <div>
+        <h2>Comment j'évalue</h2>
+        <p>On évalue l'arbre de bas en haut.</p>
+        <div id="tree-analysis"></div>
+    </div>
+</div>
+</div>
+
+<script>
+
+    let treeContainer = document.getElementById('tree-analysis');
+    let tableContainer = document.getElementById('table-analysis');
+    let minTermsContainer = document.getElementById('min-terms');
+    let analyzeButton = document.getElementById('analyze-button');
+    let logicExpression = document.getElementById('logic-expression');
+    let symbols = document.querySelectorAll('.symbol');
+    let errorPane = document.getElementById('error-pane');
+
+    let nodeId=0;
+
+    const symbolTable = {
+        'and':'∧',
+        'or':'∨',
+        'neg':'¬',
+        'imp':'⇒',
+        'equ':'⇔',
+        'nand':'|',
+        'par':'(...)'
+    };
+
+    function logicToNode(parentId,obj,lst,vars) {
+        const localNodeId = nodeId++;
+        if(obj instanceof Object){
+            lst.push(`node${localNodeId}[label="${symbolTable[obj.op]}"];`);
+            lst.push(`node${parentId}->node${localNodeId};`);
+            if(obj.left){
+                logicToNode(localNodeId,obj.left,lst,vars);
+            }
+            if(obj.right){
+                logicToNode(localNodeId,obj.right,lst,vars);
+            }
+        }else{
+            lst.push(`node${localNodeId}[label="${obj}"];`);
+            lst.push(`node${parentId}->node${localNodeId};`);
+            if(vars.indexOf(obj)<0) {
+                vars.push(obj);
+            }
+        }
+    }
+
+    function reduce(obj,vars){
+        if(obj instanceof Object){
+            switch (obj.op){
+                case "and":
+                    return reduce(obj.left,vars)&&reduce(obj.right,vars);
+                case "neg":
+                    return !reduce(obj.left,vars);
+                case "imp":
+                    return !reduce(obj.left,vars)||reduce(obj.right,vars);
+                case "or":
+                    return reduce(obj.left,vars)||reduce(obj.right,vars);
+                case "par":
+                    return reduce(obj.left,vars);
+                case 'equ':
+                    return reduce(obj.left,vars)===reduce(obj.right,vars);
+                case 'nand':
+                    return !(reduce(obj.left,vars)&&reduce(obj.right,vars));
+            }
+            throw 'Unknown operator!';
+        }else{
+            return vars[obj]||false;
+        }
+    }
+
+    /**
+     *
+     *
+     * @param vars {string[]} variables names
+     * @param values {boolean[]} variables values
+     * @param fn {function({string:boolean})} callback for each value row
+     */
+    function recurseBinary(vars,values,fn){
+        if(values.length===vars.length){
+            let paramObject = {};
+            for(let i in vars){
+                paramObject[vars[i]]=values[i];
+            }
+            fn(paramObject);
+        }else{
+            values.push(false);
+            recurseBinary(vars,values,fn);
+            values.pop()
+            values.push(true);
+            recurseBinary(vars,values,fn);
+            values.pop()
+        }
+    }
+
+
+    symbols.forEach(s=>{
+        s.addEventListener('click',(event)=>{
+            if (logicExpression.selectionStart || logicExpression.selectionStart == '0') {
+                let startPos = logicExpression.selectionStart;
+                let endPos = logicExpression.selectionEnd;
+                logicExpression.value = logicExpression.value.substring(0, startPos)
+                    + event.target.innerText
+                    + logicExpression.value.substring(endPos, logicExpression.value.length);
+                logicExpression.focus();
+                logicExpression.selectionStart = startPos+1;
+                logicExpression.selectionEnd = endPos+1;
+            } else {
+                logicExpression.value += event.target.innerText;
+                logicExpression.focus();
+            }
+
+        });
+    });
+
+    analyzeButton.addEventListener('click',()=>{
+
+        treeContainer.innerHTML='';
+        tableContainer.innerHTML='';
+        minTermsContainer.innerHTML='';
+        errorPane.style.display='none';
+        try {
+            let result = logic.parse(logicExpression.value);
+            let lst = [];
+            let vars = [];
+            logicToNode("expression", result, lst, vars);
+            console.log(lst);
+
+            let viz = new Viz();
+
+            viz.renderSVGElement(`digraph { nodeexpression[label="expression"]; ${lst.join('')} }`)
+                .then(function (element) {
+                    treeContainer.appendChild(element);
+                })
+                .catch(error => {
+                    // Create a new Viz instance (@see Caveats page for more info)
+                    viz = new Viz();
+
+                    // Possibly display the error
+                    console.error(error);
+                });
+
+            let table = '';
+            table += `<table>`;
+            table += '<tr>';
+            for (let aVar of vars) {
+                table += `<th>${aVar}</th>`;
+            }
+            table += `<th>=</th>`;
+            table += '</tr>';
+
+            let minTerms=[];
+
+            recurseBinary(vars, [], (values) => {
+                let reduced = reduce(result, values);
+                table += '<tr>';
+                let terms=[];
+                for (let aVar of vars) {
+                    table += `<td>${values[aVar] ? 'V' : 'F'}</td>`;
+                    if(values[aVar]){
+                        terms.push(aVar);
+                    }else {
+                        terms.push(`¬${aVar}`);
+                    }
+                }
+                if(reduced) {
+                    minTerms.push(`(${terms.join('∧')})`);
+                }
+                table += `<td>${reduced ? 'V' : 'F'}</td>`;
+                table += '</tr>';
+            });
+
+            minTermsContainer.innerHTML = minTerms.join('∨');
+
+            table += '</table>';
+
+            tableContainer.innerHTML = table;
+        }catch (e) {
+            console.log(e);
+            errorPane.innerText=e;
+            errorPane.style.display='block';
+        }
+
+    });
+
+
+
+
+</script>
+
+<script>
+
+</script>
+</body>
+</html>
